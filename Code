@@ -1,0 +1,102 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <curl/curl.h>
+#include <regex.h>
+
+#define URL "https://www.amazon.com/s?k=laptop+deals"  // Страница с акциями
+
+// Структура для хранения загруженных данных
+struct Memory {
+    char *response;
+    size_t size;
+};
+
+// Функция обратного вызова для записи данных от curl
+size_t write_callback(void *data, size_t size, size_t nmemb, void *clientp) {
+    size_t total_size = size * nmemb;
+    struct Memory *mem = (struct Memory *)clientp;
+
+    char *ptr = realloc(mem->response, mem->size + total_size + 1);
+    if (ptr == NULL) {
+        printf("Ошибка выделения памяти\n");
+        return 0;
+    }
+
+    mem->response = ptr;
+    memcpy(&(mem->response[mem->size]), data, total_size);
+    mem->size += total_size;
+    mem->response[mem->size] = 0;
+
+    return total_size;
+}
+
+// Функция загрузки HTML-страницы
+char *fetch_page(const char *url) {
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        fprintf(stderr, "Ошибка инициализации curl\n");
+        return NULL;
+    }
+
+    struct Memory chunk = { .response = malloc(1), .size = 0 };
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");  // Маскируемся под браузер
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Ошибка загрузки страницы: %s\n", curl_easy_strerror(res));
+        free(chunk.response);
+        curl_easy_cleanup(curl);
+        return NULL;
+    }
+
+    curl_easy_cleanup(curl);
+    return chunk.response;
+}
+
+// Функция поиска скидок в HTML через регулярные выражения
+void extract_discounts(const char *html) {
+    regex_t regex;
+    regmatch_t matches[2];
+
+    // Пример регулярки для поиска цен (может отличаться на разных сайтах)
+    const char *pattern = "\\$([0-9]+\\.[0-9]+)";
+
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
+        fprintf(stderr, "Ошибка компиляции регулярного выражения\n");
+        return;
+    }
+
+    const char *cursor = html;
+    while (regexec(&regex, cursor, 2, matches, 0) == 0) {
+        char price[16] = {0};
+        int len = matches[1].rm_eo - matches[1].rm_so;
+        strncpy(price, cursor + matches[1].rm_so, len);
+        price[len] = '\0';
+
+        printf("Цена: $%s\n", price);
+
+        cursor += matches[1].rm_eo;  // Продолжаем поиск дальше
+    }
+
+    regfree(&regex);
+}
+
+int main() {
+    printf("Загружаем страницу %s...\n", URL);
+    char *html = fetch_page(URL);
+    if (!html) {
+        fprintf(stderr, "Не удалось загрузить страницу\n");
+        return 1;
+    }
+
+    printf("Анализируем скидки...\n");
+    extract_discounts(html);
+
+    free(html);
+    return 0;
+}
