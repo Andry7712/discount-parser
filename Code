@@ -5,6 +5,7 @@
 #include <regex.h>
 
 #define URL "https://www.amazon.com/s?k=laptop+deals"  // Страница с акциями
+#define OUTPUT_FILE "discounts.csv"
 
 // Структура для хранения загруженных данных
 struct Memory {
@@ -44,7 +45,7 @@ char *fetch_page(const char *url) {
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &chunk);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");  // Маскируемся под браузер
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
@@ -60,30 +61,59 @@ char *fetch_page(const char *url) {
 
 // Функция поиска скидок в HTML через регулярные выражения
 void extract_discounts(const char *html) {
-    regex_t regex;
+    regex_t regex_price, regex_old_price;
     regmatch_t matches[2];
 
-    // Пример регулярки для поиска цен (может отличаться на разных сайтах)
-    const char *pattern = "\\$([0-9]+\\.[0-9]+)";
+    // Регулярка для текущей цены (пример: "$499.99")
+    const char *pattern_price = "\\$([0-9]+\\.[0-9]+)";
+    
+    // Регулярка для старой цены (пример: "<span class=\"strike\">$699.99</span>")
+    const char *pattern_old_price = "<span[^>]*>\\$([0-9]+\\.[0-9]+)</span>";
 
-    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) {
+    if (regcomp(&regex_price, pattern_price, REG_EXTENDED) != 0 ||
+        regcomp(&regex_old_price, pattern_old_price, REG_EXTENDED) != 0) {
         fprintf(stderr, "Ошибка компиляции регулярного выражения\n");
         return;
     }
 
+    FILE *file = fopen(OUTPUT_FILE, "w");
+    if (!file) {
+        fprintf(stderr, "Ошибка создания файла %s\n", OUTPUT_FILE);
+        return;
+    }
+    fprintf(file, "Текущая цена,Старая цена,Скидка (%)\n");
+
     const char *cursor = html;
-    while (regexec(&regex, cursor, 2, matches, 0) == 0) {
-        char price[16] = {0};
+    while (regexec(&regex_price, cursor, 2, matches, 0) == 0) {
+        char current_price[16] = {0};
         int len = matches[1].rm_eo - matches[1].rm_so;
-        strncpy(price, cursor + matches[1].rm_so, len);
-        price[len] = '\0';
+        strncpy(current_price, cursor + matches[1].rm_so, len);
+        current_price[len] = '\0';
 
-        printf("Цена: $%s\n", price);
+        cursor += matches[1].rm_eo;  // Двигаемся дальше по HTML
 
-        cursor += matches[1].rm_eo;  // Продолжаем поиск дальше
+        // Проверяем наличие старой цены
+        if (regexec(&regex_old_price, cursor, 2, matches, 0) == 0) {
+            char old_price[16] = {0};
+            len = matches[1].rm_eo - matches[1].rm_so;
+            strncpy(old_price, cursor + matches[1].rm_so, len);
+            old_price[len] = '\0';
+
+            double old_p = atof(old_price);
+            double new_p = atof(current_price);
+            double discount = ((old_p - new_p) / old_p) * 100.0;
+
+            printf("Цена: $%s (Старая цена: $%s, Скидка: %.2f%%)\n", current_price, old_price, discount);
+            fprintf(file, "%s,%s,%.2f\n", current_price, old_price, discount);
+        } else {
+            printf("Цена: $%s (без скидки)\n", current_price);
+            fprintf(file, "%s,,\n", current_price);
+        }
     }
 
-    regfree(&regex);
+    fclose(file);
+    regfree(&regex_price);
+    regfree(&regex_old_price);
 }
 
 int main() {
@@ -98,5 +128,6 @@ int main() {
     extract_discounts(html);
 
     free(html);
+    printf("Результаты сохранены в %s\n", OUTPUT_FILE);
     return 0;
 }
